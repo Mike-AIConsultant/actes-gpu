@@ -41,5 +41,5 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/actes-gpu:latest
-            ghcr.io/${{ github.repository_owner }}/actes-gpu:${{ github.sha }}
+            ghcr.io/mike-aiconsultant/actes-gpu:latest
+            ghcr.io/mike-aiconsultant/actes-gpu:${{ github.sha }}
