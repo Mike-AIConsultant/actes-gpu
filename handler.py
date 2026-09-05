@@ -215,7 +215,11 @@ def diarize_sortformer(wav: Path):
     import torch
 
     with torch.inference_mode():
-        preds = model.diarize(audio=[str(wav)], batch_size=1, include_tensor_outputs=False)
+        try:
+            preds = model.diarize(audio=[str(wav)], batch_size=1, include_tensor_outputs=False)
+        except TypeError:
+            # older / newer NeMo without that keyword
+            preds = model.diarize(audio=[str(wav)], batch_size=1)
     return _parse_sortformer(preds)
 
 
@@ -291,7 +295,18 @@ def selftest():
     finally:
         shutil.rmtree(work, ignore_errors=True)
     out["gpu"] = gpu_name()
+    out["where"] = where_am_i()
     return out
+
+
+def where_am_i():
+    """Which RunPod datacentre this worker is in. Written into every job's timings so the
+    claim that the audio was processed inside the European Union is auditable per meeting."""
+    return {
+        "datacenter": os.environ.get("RUNPOD_DC_ID") or os.environ.get("RUNPOD_DATACENTER_ID") or "unknown",
+        "region": os.environ.get("RUNPOD_REGION") or "",
+        "worker_id": os.environ.get("RUNPOD_POD_ID") or "",
+    }
 
 
 def gpu_name():
@@ -347,6 +362,7 @@ def handler(job):
             "audio_s": round(audio_s, 2),
             "audio_bytes": size_bytes,
             "gpu": gpu_name(),
+            "where": where_am_i(),
             "timings": timings,
         }
     except Exception as e:
