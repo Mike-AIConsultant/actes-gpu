@@ -3,6 +3,13 @@ name: build gpu image
 on:
   push:
     branches: [main]
+    # Only rebuild when something that ends up inside the image changes. A 13.8 GB image
+    # takes about twenty minutes to build and push, so a README or script edit must not
+    # trigger it. Use "Run workflow" in the Actions tab to force a rebuild.
+    paths:
+      - "Dockerfile"
+      - "handler.py"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
 
 jobs:
