@@ -2,13 +2,15 @@ name: build gpu image
 
 on:
   push:
-    branches: [main]
+    branches: [main, model-shelf]
     # Only rebuild when something that ends up inside the image changes. A 13.8 GB image
     # takes about twenty minutes to build and push, so a README or script edit must not
     # trigger it. Use "Run workflow" in the Actions tab to force a rebuild.
     paths:
       - "Dockerfile"
       - "handler.py"
+      - "registry.py"
+      - "convert.py"
       - ".github/workflows/build.yml"
   workflow_dispatch:
 
@@ -47,6 +49,8 @@ jobs:
           context: .
           push: true
           provenance: false
+          # A branch build gets its own tag, so :latest keeps serving the proven image
+          # until the new one has been tested against a throwaway endpoint.
           tags: |
-            ghcr.io/mike-aiconsultant/actes-gpu:latest
+            ghcr.io/mike-aiconsultant/actes-gpu:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
             ghcr.io/mike-aiconsultant/actes-gpu:${{ github.sha }}

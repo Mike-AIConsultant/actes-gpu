@@ -1,12 +1,21 @@
-# actes-cat GPU service: BSC Catalan faster-whisper + NVIDIA streaming Sortformer + pyannote.
-# Everything is baked in so a cold start never downloads a model.
+# actes-cat GPU service: the Iberian speech-model shelf + NVIDIA streaming Sortformer + pyannote.
+#
+# What is baked in and what is not (the rule, and the reason):
+#   baked      a model that would otherwise have to be CONVERTED at run time, which costs
+#              minutes on every fresh worker. Converting once here is the only sane place.
+#   on demand  a model the publisher already ships in CTranslate2 form. Fetching one of those
+#              is a plain 3.1 GB file copy, about a minute on a RunPod machine, once per
+#              worker, and keeping them out holds the image (and so the cold start) down.
+# The one exception is Basque, which needs converting AND is rare on a Catalan meeting site,
+# so it is left on demand and pays about six minutes the first time somebody picks it.
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     HF_HOME=/models/hf \
-    MODELS_DIR=/models
+    MODELS_DIR=/models \
+    PYTHONPATH=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv ffmpeg curl ca-certificates git \
@@ -25,29 +34,33 @@ RUN pip3 install --no-cache-dir \
 RUN pip3 install --no-cache-dir "nemo_toolkit[asr]==2.4.0" || \
     pip3 install --no-cache-dir "nemo_toolkit[asr]"
 RUN pip3 install --no-cache-dir "pyannote.audio>=4.0"
+# transformers is what ct2-transformers-converter reads a plain Whisper checkpoint with
+RUN pip3 install --no-cache-dir "transformers>=4.44"
 
-# ---- models ------------------------------------------------------------------
-# BSC-LT Catalan faster-whisper (CTranslate2), ~3 GB. Same model as the CPU worker.
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('BSC-LT/faster-whisper-large-v3-ca-punctuated-3370h', \
-  local_dir='/models/bsc-punct', \
-  allow_patterns=['config.json','model.bin','tokenizer.json','vocabulary.json','preprocessor_config.json'])"
-
+# ---- speaker models ----------------------------------------------------------
 # NVIDIA streaming Sortformer v2 (4 speaker ceiling, 2.8 GB of card, 8.6 s on 47 min audio).
-# Only the .nemo checkpoint: the gguf and the figures are dead weight in the image.
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
 snapshot_download('nvidia/diar_streaming_sortformer_4spk-v2', local_dir='/models/sortformer', \
   allow_patterns=['*.nemo'])"
 
 # pyannote Community-1, open mirror, no token. Used when Sortformer hits its 4 speaker ceiling.
-# Downloaded into the HF cache (not a local dir) so Pipeline.from_pretrained works offline.
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
 snapshot_download('pyannote-community/speaker-diarization-community-1', \
   allow_patterns=['config.yaml','*/pytorch_model.bin','*/*.npz'])"
 
+# ---- the speech-model shelf --------------------------------------------------
 WORKDIR /app
+COPY registry.py convert.py /app/
+
+# ca: the Catalan default, already CTranslate2, baked because every job that does not choose
+#     anything uses it. Skipping it would mean a download on the commonest path.
+# mixed-es / es: BSC "Languages of Spain", punctuated. Needs converting, and Catalan mixed
+#     with Spanish is the second commonest meeting here.
+# gl: Galician turbo. Needs converting, but turbo is small (1.6 GB converted), so baking it
+#     is nearly free and removes a run-time conversion.
+RUN python /app/convert.py ca mixed-es gl && du -sh /models/*
+
 COPY handler.py /app/handler.py
 CMD ["python", "-u", "/app/handler.py"]
