@@ -20,6 +20,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # "[no build]" anywhere in the commit message skips the twenty minute rebuild. Used when
+    # a branch is merged whose image was already built and promoted by digest.
+    if: "!contains(github.event.head_commit.message, '[no build]')"
     steps:
       - uses: actions/checkout@v4
 

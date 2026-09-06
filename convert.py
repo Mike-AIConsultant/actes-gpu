@@ -21,8 +21,15 @@ def _log(msg):
     print(f"[models] {msg}", flush=True)
 
 
+# Hugging Face rate-limits anonymous downloads per IP, and both a shared CI runner and a
+# RunPod machine are shared IPs. A 429 is a "come back in a minute", not a real failure, so
+# it is retried rather than allowed to fail a build or a meeting.
+DOWNLOAD_ATTEMPTS = int(os.environ.get("SHELF_DOWNLOAD_ATTEMPTS", "5"))
+DOWNLOAD_BACKOFF_S = float(os.environ.get("SHELF_DOWNLOAD_BACKOFF_S", "20"))
+
+
 def _download(repo, dst, allow=None, ignore=None):
-    """One download from the Hub.
+    """One download from the Hub, retried on the transient failures.
 
     The RunPod template sets HF_HUB_OFFLINE=1 on purpose: it guarantees that loading the
     baked models (whisper, sortformer, pyannote) can never quietly reach for the network.
@@ -33,8 +40,28 @@ def _download(repo, dst, allow=None, ignore=None):
 
     saved = {k: os.environ.pop(k, None) for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
     try:
-        snapshot_download(repo, local_dir=str(dst),
-                          allow_patterns=allow, ignore_patterns=ignore)
+        last = None
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            try:
+                snapshot_download(repo, local_dir=str(dst),
+                                  allow_patterns=allow, ignore_patterns=ignore,
+                                  # gentler than the default 8: fewer parallel requests is
+                                  # the difference between being rate-limited and not
+                                  max_workers=4)
+                return
+            except Exception as e:
+                last = e
+                transient = any(w in f"{e.__class__.__name__}: {e}"
+                                for w in ("429", "Too Many Requests", "504", "503", "502",
+                                          "Timeout", "timed out", "Connection",
+                                          "IncompleteRead", "ChunkedEncoding"))
+                if attempt == DOWNLOAD_ATTEMPTS or not transient:
+                    raise
+                wait = DOWNLOAD_BACKOFF_S * (2 ** (attempt - 1))
+                _log(f"{repo}: {e.__class__.__name__} on attempt {attempt}, "
+                     f"retrying in {wait:.0f}s")
+                time.sleep(wait)
+        raise last
     finally:
         for k, v in saved.items():
             if v is not None:
