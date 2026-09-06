@@ -25,7 +25,7 @@ TEMPLATE=$(api -X POST https://rest.runpod.io/v1/templates -d "$(cat <<JSON
   "env": {
     "HF_HUB_OFFLINE": "1",
     "TOKENIZERS_PARALLELISM": "false",
-    "MAX_MODEL_LEN": "65536",
+    "MAX_MODEL_LEN": "40960",
     "GPU_MEMORY_UTILIZATION": "0.96",
     "MAX_NUM_SEQS": "2",
     "VLLM_STARTUP_TIMEOUT": "3000"

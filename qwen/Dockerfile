@@ -32,7 +32,13 @@ ENV MODEL_NAME=$MODEL_NAME \
     TOKENIZERS_PARALLELISM=false \
     # Runtime defaults. The endpoint template can still override any of these; baking them
     # here just means a plain `docker run` of this image also comes up sane.
-    MAX_MODEL_LEN=65536 \
+    # MAX_MODEL_LEN is 40,960, not 65,536. The 73,728-token KV cache in the round 2 worklog
+    # was measured with --enforce-eager, which is 4x slower (12.6 tok/s vs 49-50 tok/s) and
+    # not an option since this is billed by the second. With CUDA graphs on (the default when
+    # ENFORCE_EAGER is unset, as it is here), the same card at GPU_MEMORY_UTILIZATION 0.96
+    # only has room for about 43,736 tokens of KV cache, so 65,536 fails to boot. 40,960 fits
+    # with room to spare. The consuming code shrinks its transcript chunks to match this value.
+    MAX_MODEL_LEN=40960 \
     GPU_MEMORY_UTILIZATION=0.96 \
     MAX_NUM_SEQS=2 \
     VLLM_STARTUP_TIMEOUT=3000
