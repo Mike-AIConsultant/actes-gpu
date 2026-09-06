@@ -1,0 +1,42 @@
+name: promote an image to latest
+
+# Retags an already-built, already-tested image as :latest, which is what the live endpoint
+# pulls. It copies a digest, it does not rebuild: the image that gets promoted is byte for
+# byte the one that was tested, which a rebuild could not promise.
+#
+# Actions tab -> "promote an image to latest" -> Run workflow -> source tag (e.g. model-shelf)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "tag to promote (e.g. model-shelf)"
+        required: true
+        default: "model-shelf"
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: show what is being promoted
+        run: |
+          IMG=ghcr.io/mike-aiconsultant/actes-gpu
+          echo "source: $IMG:${{ inputs.source_tag }}"
+          docker buildx imagetools inspect "$IMG:${{ inputs.source_tag }}"
+          echo "current latest:"
+          docker buildx imagetools inspect "$IMG:latest" || echo "(no latest yet)"
+
+      - name: retag as latest
+        run: |
+          IMG=ghcr.io/mike-aiconsultant/actes-gpu
+          docker buildx imagetools create -t "$IMG:latest" "$IMG:${{ inputs.source_tag }}"
+          echo "new latest:"
+          docker buildx imagetools inspect "$IMG:latest"

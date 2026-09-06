@@ -3,7 +3,7 @@
 It does the three expensive steps and nothing else:
   1. fetch the audio (a signed, short lived URL served by the Arsys box)
   2. ffmpeg to 16 kHz mono
-  3. transcribe with the BSC Catalan model on the card
+  3. transcribe with the model the meeting asked for, off the shelf in registry.py
   4. separate speakers, Sortformer by default, pyannote when Sortformer hits its ceiling
 
 It stores nothing. Everything it downloads lives under /tmp and is deleted before the job
@@ -23,8 +23,10 @@ from pathlib import Path
 
 import runpod
 
+import convert
+from registry import DEFAULT_MODEL, MODELS, canonical
+
 SR = 16000
-ASR_MODEL_DIR = os.environ.get("ASR_MODEL_DIR", "/models/bsc-punct")
 SORTFORMER_PATH = os.environ.get(
     "SORTFORMER_PATH", "/models/sortformer/diar_streaming_sortformer_4spk-v2.nemo"
 )
@@ -46,18 +48,45 @@ TRANSCRIBE_OPTS = dict(
 )
 
 _ASR = None
+_ASR_PATH = None
 _SORTFORMER = None
 _PYANNOTE = None
 
 
 # ------------------------------------------------------------------ models (loaded once)
-def get_asr():
-    global _ASR
-    if _ASR is None:
-        from faster_whisper import WhisperModel
+def get_asr(model_key=DEFAULT_MODEL):
+    """The model the caller asked for, on the card. Only one is held at a time: a card has
+    room for several, but keeping one and swapping is simpler, and a swap costs a few seconds
+    against a job that takes minutes.
 
-        _ASR = WhisperModel(ASR_MODEL_DIR, device="cuda", compute_type="float16")
-    return _ASR
+    Keyed on the PATH, not the shelf key, because several keys can share one set of weights
+    (mixt and es are the same model with a different language hint) and reloading three
+    gigabytes to change a hint would be silly.
+
+    Returns (model, seconds_fetching, seconds_loading)."""
+    global _ASR, _ASR_PATH
+
+    path, fetch_s = convert.ensure(model_key)
+    if _ASR is not None and _ASR_PATH == path:
+        return _ASR, fetch_s, 0.0
+
+    if _ASR is not None:
+        _ASR = None
+        _ASR_PATH = None
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    t0 = time.time()
+    from faster_whisper import WhisperModel
+
+    _ASR = WhisperModel(path, device="cuda", compute_type="float16")
+    _ASR_PATH = path
+    return _ASR, fetch_s, round(time.time() - t0, 2)
 
 
 def get_sortformer():
@@ -134,9 +163,17 @@ def audio_seconds(wav: Path) -> float:
 
 
 # ------------------------------------------------------------------ transcription
-def transcribe(wav: Path, language="ca"):
-    model = get_asr()
-    segments, _info = model.transcribe(str(wav), language=language, **TRANSCRIBE_OPTS)
+def transcribe(wav: Path, model, language="ca", multilingual=False):
+    opts = dict(TRANSCRIBE_OPTS)
+    if multilingual:
+        # a meeting that switches between Catalan and Spanish: let faster-whisper decide
+        # per segment instead of once, from the first thirty seconds
+        opts["multilingual"] = True
+    try:
+        segments, _info = model.transcribe(str(wav), language=language, **opts)
+    except TypeError:
+        opts.pop("multilingual", None)
+        segments, _info = model.transcribe(str(wav), language=language, **opts)
     words = []
     for i, seg in enumerate(segments):
         if seg.words:
@@ -281,7 +318,7 @@ def selftest():
             check=True, capture_output=True,
         )
         for name, fn in (
-            ("asr", lambda: len(transcribe(wav))),
+            ("asr", lambda: len(transcribe(wav, get_asr(DEFAULT_MODEL)[0]))),
             ("sortformer", lambda: len(diarize_sortformer(wav))),
             ("pyannote", lambda: len(diarize_pyannote(wav))),
         ):
@@ -296,6 +333,8 @@ def selftest():
         shutil.rmtree(work, ignore_errors=True)
     out["gpu"] = gpu_name()
     out["where"] = where_am_i()
+    out["shelf"] = {k: {"repo": v["repo"], "baked": bool(v.get("baked"))}
+                    for k, v in MODELS.items()}
     return out
 
 
@@ -339,12 +378,29 @@ def handler(job):
             pass
         audio_s = audio_seconds(wav)
 
-        t0 = time.time()
-        get_asr()
-        timings["asr_load_s"] = round(time.time() - t0, 2)
+        asked = (inp.get("model") or DEFAULT_MODEL).strip()
+        model_key = canonical(asked) or DEFAULT_MODEL
+        spec = MODELS[model_key]
+        timings["asr_model"] = model_key
+        timings["asr_model_repo"] = spec["repo"]
+        if model_key != asked:
+            timings["asr_model_asked"] = asked   # an unknown key never fails a meeting
 
+        model, fetch_s, load_s = get_asr(model_key)
+        timings["asr_fetch_s"] = fetch_s        # >0 only the first time this worker saw it
+        timings["asr_load_s"] = load_s
+
+        # The shelf entry owns the language: picking "Gallec" and then being handed
+        # language="ca" by an older worker would silently transcribe Galician as Catalan.
+        # A bare `language` with no `model` is only honoured for the old callers that
+        # predate the shelf.
+        if inp.get("model"):
+            language = spec.get("language")
+        else:
+            language = inp.get("language") or spec.get("language")
         t0 = time.time()
-        words = transcribe(wav, language=inp.get("language") or "ca")
+        words = transcribe(wav, model, language=language,
+                           multilingual=bool(spec.get("multilingual")))
         timings["transcribe_s"] = round(time.time() - t0, 2)
 
         t0 = time.time()
@@ -358,6 +414,8 @@ def handler(job):
             "words": words,
             "turns": [[round(a, 2), round(b, 2), spk] for a, b, spk in turns],
             "diar_engine": engine,
+            "asr_model": model_key,
+            "asr_model_repo": spec["repo"],
             "speakers_raw": count_speakers(turns),
             "audio_s": round(audio_s, 2),
             "audio_bytes": size_bytes,
