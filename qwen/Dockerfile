@@ -51,6 +51,14 @@ ENV MODEL_NAME=$MODEL_NAME \
 # a Hugging Face repo id. No HF_TOKEN needed: this model is public.
 RUN python3 /src/download_model.py
 
-# Add the RunPod datacentre to every response, mirroring where_am_i() in ../handler.py, so a
-# European-mode acta has proof it was actually written inside the EU.
-COPY handler.py /src/handler.py
+# Deliberately NOTHING ELSE. No handler.py, no main.py, no CMD/ENTRYPOINT override. This image
+# inherits runpod/worker-v1-vllm:v2.26.0's own job loop unchanged, because that loop is the
+# thing that is proven to work (25 completed jobs on the throwaway dev endpoint). A first
+# attempt at this image patched a "where" field into handler.py to prove the EU datacentre in
+# every response, and every serverless deployment of THAT image failed the same way: a worker
+# reaches ready, flips to running, flips back, and never completes a job, on every card tier,
+# every context size, and a brand new endpoint. The one shared thing across every failure was
+# the patched handler.py / runpod.serverless.start() wrapper; the one working case (a
+# diagnostic pod running bare `vllm serve`, no RunPod SDK) did not have it. The datacentre proof
+# does not need the field: the consuming code already falls back to reading the endpoint's own
+# pinned EU locations through GraphQL when the response carries none.
