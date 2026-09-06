@@ -56,11 +56,11 @@ COPY registry.py convert.py /app/
 
 # ca: the Catalan default, already CTranslate2, baked because every job that does not choose
 #     anything uses it. Skipping it would mean a download on the commonest path.
-# mixed-es / es: BSC "Languages of Spain", punctuated. Needs converting, and Catalan mixed
+# mixt / es: BSC "Languages of Spain", punctuated. Needs converting, and Catalan mixed
 #     with Spanish is the second commonest meeting here.
 # gl: Galician turbo. Needs converting, but turbo is small (1.6 GB converted), so baking it
 #     is nearly free and removes a run-time conversion.
-RUN python /app/convert.py ca mixed-es gl && du -sh /models/*
+RUN python /app/convert.py ca mixt gl && du -sh /models/* && du -sh /models
 
 COPY handler.py /app/handler.py
 CMD ["python", "-u", "/app/handler.py"]

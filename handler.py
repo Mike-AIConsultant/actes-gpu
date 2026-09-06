@@ -24,7 +24,7 @@ from pathlib import Path
 import runpod
 
 import convert
-from registry import DEFAULT_MODEL, MODELS
+from registry import DEFAULT_MODEL, MODELS, canonical
 
 SR = 16000
 SORTFORMER_PATH = os.environ.get(
@@ -48,7 +48,7 @@ TRANSCRIBE_OPTS = dict(
 )
 
 _ASR = None
-_ASR_KEY = None
+_ASR_PATH = None
 _SORTFORMER = None
 _PYANNOTE = None
 
@@ -56,17 +56,23 @@ _PYANNOTE = None
 # ------------------------------------------------------------------ models (loaded once)
 def get_asr(model_key=DEFAULT_MODEL):
     """The model the caller asked for, on the card. Only one is held at a time: a card has
-    room for several, but keeping one and swapping is simpler and a swap costs a few seconds
-    against a job that takes minutes. Returns (model, seconds_fetching, seconds_loading)."""
-    global _ASR, _ASR_KEY
-    if _ASR is not None and _ASR_KEY == model_key:
-        return _ASR, 0.0, 0.0
+    room for several, but keeping one and swapping is simpler, and a swap costs a few seconds
+    against a job that takes minutes.
+
+    Keyed on the PATH, not the shelf key, because several keys can share one set of weights
+    (mixt and es are the same model with a different language hint) and reloading three
+    gigabytes to change a hint would be silly.
+
+    Returns (model, seconds_fetching, seconds_loading)."""
+    global _ASR, _ASR_PATH
 
     path, fetch_s = convert.ensure(model_key)
+    if _ASR is not None and _ASR_PATH == path:
+        return _ASR, fetch_s, 0.0
 
     if _ASR is not None:
         _ASR = None
-        _ASR_KEY = None
+        _ASR_PATH = None
         gc.collect()
         try:
             import torch
@@ -79,7 +85,7 @@ def get_asr(model_key=DEFAULT_MODEL):
     from faster_whisper import WhisperModel
 
     _ASR = WhisperModel(path, device="cuda", compute_type="float16")
-    _ASR_KEY = model_key
+    _ASR_PATH = path
     return _ASR, fetch_s, round(time.time() - t0, 2)
 
 
@@ -373,7 +379,7 @@ def handler(job):
         audio_s = audio_seconds(wav)
 
         asked = (inp.get("model") or DEFAULT_MODEL).strip()
-        model_key = asked if asked in MODELS else DEFAULT_MODEL
+        model_key = canonical(asked) or DEFAULT_MODEL
         spec = MODELS[model_key]
         timings["asr_model"] = model_key
         timings["asr_model_repo"] = spec["repo"]

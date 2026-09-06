@@ -3,9 +3,9 @@ name: build gpu image
 on:
   push:
     branches: [main, model-shelf]
-    # Only rebuild when something that ends up inside the image changes. A 13.8 GB image
-    # takes about twenty minutes to build and push, so a README or script edit must not
-    # trigger it. Use "Run workflow" in the Actions tab to force a rebuild.
+    # Only rebuild when something that ends up inside the image changes. The image takes
+    # about twenty minutes to build and push, so a README or script edit must not trigger
+    # it. Use "Run workflow" in the Actions tab to force a rebuild.
     paths:
       - "Dockerfile"
       - "handler.py"
@@ -23,17 +23,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The image is ~20 GB with the models baked in. A stock runner does not have room
-      # unless the preinstalled toolchains are removed first.
+      # main publishes :latest, which is what the live endpoint pulls. Every other branch
+      # publishes under its own tag, so a work-in-progress image can be built and tested
+      # against a throwaway endpoint without touching what is serving meetings.
+      - name: choose tags
+        id: tags
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "tags=ghcr.io/mike-aiconsultant/actes-gpu:latest,ghcr.io/mike-aiconsultant/actes-gpu:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/mike-aiconsultant/actes-gpu:${GITHUB_REF_NAME},ghcr.io/mike-aiconsultant/actes-gpu:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The image is ~19 GB with the models baked in. A stock runner does not have room on /
+      # unless the preinstalled toolchains are removed first, and docker's own store is moved
+      # to /mnt, which is the roomy disk on a GitHub runner.
       - name: free up disk
         run: |
-          df -h /
+          df -h / /mnt
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost /usr/share/swift "$AGENT_TOOLSDIRECTORY" \
                       /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules || true
           sudo apt-get clean
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
           docker image prune -af || true
-          df -h /
+          df -h / /mnt
 
       - uses: docker/setup-buildx-action@v3
 
@@ -49,8 +66,9 @@ jobs:
           context: .
           push: true
           provenance: false
-          # A branch build gets its own tag, so :latest keeps serving the proven image
-          # until the new one has been tested against a throwaway endpoint.
-          tags: |
-            ghcr.io/mike-aiconsultant/actes-gpu:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
-            ghcr.io/mike-aiconsultant/actes-gpu:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
+
+      - name: report image size
+        run: |
+          docker image ls ghcr.io/mike-aiconsultant/actes-gpu || true
+          df -h /mnt
