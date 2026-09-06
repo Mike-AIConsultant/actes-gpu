@@ -3,7 +3,7 @@
 It does the three expensive steps and nothing else:
   1. fetch the audio (a signed, short lived URL served by the Arsys box)
   2. ffmpeg to 16 kHz mono
-  3. transcribe with the BSC Catalan model on the card
+  3. transcribe with the model the meeting asked for, off the shelf in registry.py
   4. separate speakers, Sortformer by default, pyannote when Sortformer hits its ceiling
 
 It stores nothing. Everything it downloads lives under /tmp and is deleted before the job
