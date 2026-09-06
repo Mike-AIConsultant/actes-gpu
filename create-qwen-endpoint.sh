@@ -36,18 +36,24 @@ JSON
 TEMPLATE_ID=$(echo "$TEMPLATE" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 echo "template: $TEMPLATE_ID"
 
-echo "creating endpoint (EU member states only, 24 GB cards only)"
-# 24 GB cards ONLY, unlike the speech endpoint. The model is baked to fit a 24 GB card with
-# room to spare (17.0 GiB weights + non-torch, 5.19 GiB KV cache); a 48 GB card would just cost
-# more for the same job. NVIDIA L40S and RTX A6000 (both 48 GB) are deliberately left out.
+echo "creating endpoint (EU member states only, 48 GB cards)"
+# 48 GB cards (RTX A6000, A40), NOT 24 GB. Proved the hard way on 2026-09-06 with a diagnostic
+# pod (gpu/qwen -- see the "qwen image" worklog entry): a 24 GB card only has room for the
+# weights (17.9 GiB) plus activation plus CUDA graphs with almost nothing left for a 40,960
+# token KV cache, so vLLM refuses to start and the serverless worker restarts forever with NO
+# visible error through any API (ready -> running -> ready, queue never drains). RunPod's own
+# 24 GB "4090" and "L4" tiers on serverless do not have the headroom a bare-metal 4090 pod does.
+# A 48 GB card gives 25.6 GiB of KV cache, nine times what one request needs, for 12 cents/hr
+# more ($1.22 vs $1.10). Do not shrink this back to 24 GB without re-measuring on THIS specific
+# serverless tier (not a diagnostic pod) first.
 ENDPOINT=$(api -X POST https://rest.runpod.io/v1/endpoints -d "$(cat <<JSON
 {
   "name": "$NAME",
   "templateId": "$TEMPLATE_ID",
   "computeType": "GPU",
-  "gpuTypeIds": ["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 3090", "NVIDIA L4"],
+  "gpuTypeIds": ["NVIDIA RTX A6000", "NVIDIA A40"],
   "dataCenterIds": ["EU-FR-1", "EU-NL-1", "EU-SE-1", "EU-RO-1", "EU-CZ-1"],
-  "minCudaVersion": "12.8",
+  "minCudaVersion": "13.0",
   "workersMin": 0,
   "workersMax": 1,
   "idleTimeout": 90,
@@ -62,10 +68,10 @@ ENDPOINT_ID=$(echo "$ENDPOINT" | python3 -c 'import sys,json;print(json.load(sys
 
 # The REST API accepts dataCenterIds, returns 200, and does nothing with it (proved twice now,
 # once on the speech endpoint and once in round 2 of this build). Only the GraphQL mutation
-# actually pins the locations. AMPERE_24 + ADA_24 is the GraphQL name for exactly the same
-# 24 GB tier as the gpuTypeIds list above -- do not widen this to AMPERE_48/ADA_48.
+# actually pins the locations. AMPERE_48 is the GraphQL name matching RTX A6000 / A40 -- do not
+# narrow this back to a 24 GB tier without re-measuring MAX_MODEL_LEN on serverless (not a pod).
 echo "pinning locations and GPU tier through GraphQL (REST ignores dataCenterIds)"
-Q="mutation { saveEndpoint(input: { id: \"$ENDPOINT_ID\", name: \"$NAME\", templateId: \"$TEMPLATE_ID\", gpuIds: \"AMPERE_24,ADA_24\", locations: \"EU-FR-1,EU-NL-1,EU-SE-1,EU-RO-1,EU-CZ-1\", idleTimeout: 90, scalerType: \"QUEUE_DELAY\", scalerValue: 4, workersMin: 0, workersMax: 1 }) { id locations gpuIds } }"
+Q="mutation { saveEndpoint(input: { id: \"$ENDPOINT_ID\", name: \"$NAME\", templateId: \"$TEMPLATE_ID\", gpuIds: \"AMPERE_48\", locations: \"EU-FR-1,EU-NL-1,EU-SE-1,EU-RO-1,EU-CZ-1\", idleTimeout: 90, scalerType: \"QUEUE_DELAY\", scalerValue: 4, workersMin: 0, workersMax: 1 }) { id locations gpuIds } }"
 echo "GraphQL pinning response:"
 curl -sS -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
   -d "$(python3 -c 'import json,sys;print(json.dumps({"query":sys.argv[1]}))' "$Q")" \
